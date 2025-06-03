@@ -1,0 +1,19 @@
+# This is a conda environment configuration file for the Autoformer project.
+# It specifies the environment name, channels, and dependencies required to run the project.
+
+name: autoformer           # Name of the conda environment
+
+channels:                  # List of channels to search for packages
+  - conda-forge            # Community-maintained conda channel (up-to-date packages)
+  - pytorch                # Official PyTorch channel for torch and related libraries
+  - defaults               # Default conda channel
+
+dependencies:              # Packages to install in the environment
+  - python=3.7             # Python version 3.7
+  - pip                    # Pip package manager
+  - matplotlib             # Plotting library for visualizations
+  - numpy                  # Fundamental numerical computing library
+  - pandas                 # Data manipulation and analysis library
+  - scikit-learn           # Machine learning library
+  - pip:                   # Packages to install via pip
+      - torch==1.9.0       # Install specific version of PyTorch (1.9.0) via pip

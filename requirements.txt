@@ -1,0 +1,8 @@
+# List of Python packages required to run this project.
+# PIP install these packages
+pandas
+scikit-learn
+torchvision
+numpy
+matplotlib
+reformer_pytorch
