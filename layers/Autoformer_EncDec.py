@@ -2,21 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+# Custom LayerNorm for the seasonal component of time series decomposition.
 class my_Layernorm(nn.Module):
     """
     Special designed layernorm for the seasonal part
     """
     def __init__(self, channels):
         super(my_Layernorm, self).__init__()
-        self.layernorm = nn.LayerNorm(channels)
+        self.layernorm = nn.LayerNorm(channels)  # Standard LayerNorm
 
     def forward(self, x):
-        x_hat = self.layernorm(x)
+        x_hat = self.layernorm(x)               # Apply LayerNorm to input
+        # Calculate mean across sequence (dim=1), expand it back, then subtract to ensure zero mean for each sequence
         bias = torch.mean(x_hat, dim=1).unsqueeze(1).repeat(1, x.shape[1], 1)
         return x_hat - bias
 
-
+# Moving average layer for extracting the trend component from a time series.
 class moving_avg(nn.Module):
     """
     Moving average block to highlight the trend of time series
@@ -27,15 +28,16 @@ class moving_avg(nn.Module):
         self.avg = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=0)
 
     def forward(self, x):
-        # padding on the both ends of time series
+        # Pads both ends of the time series with the first and last values to prevent length reduction after avg pool
         front = x[:, 0:1, :].repeat(1, (self.kernel_size - 1) // 2, 1)
         end = x[:, -1:, :].repeat(1, (self.kernel_size - 1) // 2, 1)
         x = torch.cat([front, x, end], dim=1)
+        # nn.AvgPool1d expects (batch, features, length), so permute, pool, and permute back
         x = self.avg(x.permute(0, 2, 1))
         x = x.permute(0, 2, 1)
         return x
 
-
+# Decomposition block: splits a series into seasonal (residual) and trend (moving mean) parts.
 class series_decomp(nn.Module):
     """
     Series decomposition block
@@ -47,9 +49,9 @@ class series_decomp(nn.Module):
     def forward(self, x):
         moving_mean = self.moving_avg(x)
         res = x - moving_mean
-        return res, moving_mean
+        return res, moving_mean  # returns (residual, trend)
 
-
+# Encoder layer for Autoformer; includes attention and two decomposition stages.
 class EncoderLayer(nn.Module):
     """
     Autoformer encoder layer with the progressive decomposition architecture
@@ -66,19 +68,23 @@ class EncoderLayer(nn.Module):
         self.activation = F.relu if activation == "relu" else F.gelu
 
     def forward(self, x, attn_mask=None):
+        # Self-attention (AutoCorrelation) with residual connection
         new_x, attn = self.attention(
             x, x, x,
             attn_mask=attn_mask
         )
         x = x + self.dropout(new_x)
+        # First series decomposition (extract seasonal/trend)
         x, _ = self.decomp1(x)
         y = x
+        # Feedforward (conv1x1 layers as MLP)
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
+        # Second decomposition after FFN
         res, _ = self.decomp2(x + y)
         return res, attn
 
-
+# Multi-layer encoder, possibly with additional convolutional layers and normalization.
 class Encoder(nn.Module):
     """
     Autoformer encoder
@@ -91,6 +97,7 @@ class Encoder(nn.Module):
 
     def forward(self, x, attn_mask=None):
         attns = []
+        # Optionally interleave attention and conv layers
         if self.conv_layers is not None:
             for attn_layer, conv_layer in zip(self.attn_layers, self.conv_layers):
                 x, attn = attn_layer(x, attn_mask=attn_mask)
@@ -99,16 +106,18 @@ class Encoder(nn.Module):
             x, attn = self.attn_layers[-1](x)
             attns.append(attn)
         else:
+            # Only attention layers
             for attn_layer in self.attn_layers:
                 x, attn = attn_layer(x, attn_mask=attn_mask)
                 attns.append(attn)
 
+        # Optional normalization at output
         if self.norm is not None:
             x = self.norm(x)
 
         return x, attns
 
-
+# Decoder layer: combines self-attention, cross-attention, and 3-stage decomposition/projection.
 class DecoderLayer(nn.Module):
     """
     Autoformer decoder layer with the progressive decomposition architecture
@@ -125,31 +134,38 @@ class DecoderLayer(nn.Module):
         self.decomp2 = series_decomp(moving_avg)
         self.decomp3 = series_decomp(moving_avg)
         self.dropout = nn.Dropout(dropout)
+        # Output projection: 1D conv with kernel 3 (circular padding), projects to c_out dims
         self.projection = nn.Conv1d(in_channels=d_model, out_channels=c_out, kernel_size=3, stride=1, padding=1,
                                     padding_mode='circular', bias=False)
         self.activation = F.relu if activation == "relu" else F.gelu
 
     def forward(self, x, cross, x_mask=None, cross_mask=None):
+        # Self-attention + residual
         x = x + self.dropout(self.self_attention(
             x, x, x,
             attn_mask=x_mask
         )[0])
+        # First decomposition
         x, trend1 = self.decomp1(x)
+        # Cross-attention + residual
         x = x + self.dropout(self.cross_attention(
             x, cross, cross,
             attn_mask=cross_mask
         )[0])
+        # Second decomposition
         x, trend2 = self.decomp2(x)
         y = x
+        # Feedforward
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
+        # Third decomposition
         x, trend3 = self.decomp3(x + y)
-
+        # Aggregate all trend components and project to output
         residual_trend = trend1 + trend2 + trend3
         residual_trend = self.projection(residual_trend.permute(0, 2, 1)).transpose(1, 2)
         return x, residual_trend
 
-
+# Multi-layer decoder, with optional normalization and projection.
 class Decoder(nn.Module):
     """
     Autoformer encoder
@@ -161,10 +177,12 @@ class Decoder(nn.Module):
         self.projection = projection
 
     def forward(self, x, cross, x_mask=None, cross_mask=None, trend=None):
+        # Pass input through each decoder layer, accumulating the trend components
         for layer in self.layers:
             x, residual_trend = layer(x, cross, x_mask=x_mask, cross_mask=cross_mask)
             trend = trend + residual_trend
 
+        # Optional normalization/projection
         if self.norm is not None:
             x = self.norm(x)
 
