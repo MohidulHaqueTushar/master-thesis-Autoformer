@@ -3,6 +3,6 @@
 pandas
 scikit-learn
 torchvision
-numpy
+numpy==1.26.4
 matplotlib
 reformer_pytorch

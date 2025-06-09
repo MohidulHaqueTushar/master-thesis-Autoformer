@@ -12,7 +12,7 @@ dependencies:              # Packages to install in the environment
   - python=3.7             # Python version 3.7
   - pip                    # Pip package manager
   - matplotlib             # Plotting library for visualizations
-  - numpy                  # Fundamental numerical computing library
+  - numpy==1.26.4          # Fundamental numerical computing library
   - pandas                 # Data manipulation and analysis library
   - scikit-learn           # Machine learning library
   - pip:                   # Packages to install via pip
